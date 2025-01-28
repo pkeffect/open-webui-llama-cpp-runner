@@ -1,7 +1,7 @@
 [project]
 name = "llama-cpp-runner"
 version = "0.0.1"
-description = "A runner for llama-cpp"
+description = "Quick and easy way to run large language models (LLMs) with llama.cpp"
 readme = "README.md"
 authors = [
     { name = "Timothy Jaeryang Baek", email = "tim@openwebui.com" }

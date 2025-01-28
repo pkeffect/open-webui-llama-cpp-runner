@@ -9,27 +9,41 @@ import stat
 import time
 import socket
 
+import os
+import platform
+import requests
+import zipfile
+import json
+
 
 class LlamaCpp:
     def __init__(
-        self, models_dir, cache_dir="./cache", verbose=False, timeout_minutes=5
+        self,
+        models_dir,
+        cache_dir="~/.llama_cpp_runner",
+        verbose=False,
+        timeout_minutes=5,
+        pinned_version=None,
     ):
         """
         Initialize the LlamaCpp class.
-
         Args:
             models_dir (str): Directory where GGUF models are stored.
-            cache_dir (str): Directory to store llama.cpp binaries and related assets.
+            cache_dir (str): Directory to store llama.cpp binaries and related assets. Defaults to '~/.llama_cpp_runner'.
             verbose (bool): Whether to enable verbose logging.
             timeout_minutes (int): Timeout for shutting down idle servers.
+            pinned_version (str or None): Pinned release version of llama.cpp binaries.
         """
         self.models_dir = models_dir
-        self.cache_dir = cache_dir
+        self.cache_dir = os.path.expanduser(
+            cache_dir
+        )  # Ensure cache is in a fixed location
         self.verbose = verbose
         self.timeout_minutes = timeout_minutes
+        self.pinned_version = pinned_version  # Optional pinned version
         self.llama_cpp_path = (
             self._install_llama_cpp_binaries()
-        )  # Handle binaries installation
+        )  # Install the required binaries
         self.servers = (
             {}
         )  # Maintain a mapping of model names to LlamaCppServer instances
@@ -37,7 +51,6 @@ class LlamaCpp:
     def list_models(self):
         """
         List all GGUF models available in the `models_dir`.
-
         Returns:
             list: A list of model names (files ending in ".gguf").
         """
@@ -51,37 +64,29 @@ class LlamaCpp:
     def chat_completion(self, body):
         """
         Handle chat completion requests.
-
         Args:
             body (dict): The payload for the chat completion request. It must contain the "model" key.
-
         Returns:
             dict or generator: Response from the server (non-streaming or streaming mode).
         """
         if "model" not in body:
             raise ValueError("The request body must contain a 'model' key.")
-
         model_name = body["model"]
         gguf_path = os.path.join(self.models_dir, model_name)
-
         if not os.path.exists(gguf_path):
             raise FileNotFoundError(f"Model file not found: {gguf_path}")
-
         # Check if the server for this model is already running
         if model_name not in self.servers or not self.servers[model_name]._server_url:
             self._log(f"Initializing a new server for model: {model_name}")
             self.servers[model_name] = self._create_server(gguf_path)
-
         server = self.servers[model_name]
         return server.chat_completion(body)
 
     def _create_server(self, gguf_path):
         """
         Create a new LlamaCppServer instance for the given model.
-
         Args:
             gguf_path (str): Path to the GGUF model file.
-
         Returns:
             LlamaCppServer: A new server instance.
         """
@@ -96,49 +101,63 @@ class LlamaCpp:
     def _install_llama_cpp_binaries(self):
         """
         Download and install llama.cpp binaries.
-
         Returns:
             str: Path to the installed llama.cpp binaries.
         """
         self._log("Installing llama.cpp binaries...")
-        release_info = self._get_latest_release()
-        assets = release_info["assets"]
-        asset = self._get_appropriate_asset(assets)
-        if not asset:
-            raise RuntimeError("No appropriate binary found for your system.")
+        try:
+            # Use pinned version if provided, otherwise fetch the latest release
+            release_info = self._get_release_info()
+            assets = release_info["assets"]
+            asset = self._get_appropriate_asset(assets)
+            if not asset:
+                raise RuntimeError("No appropriate binary found for your system.")
+            asset_name = asset["name"]
 
-        asset_name = asset["name"]
-        if self._check_cache(release_info, asset):
-            self._log("Using cached llama.cpp binaries.")
-        else:
-            self._download_and_unzip(asset["browser_download_url"], asset_name)
-            self._update_cache_info(release_info, asset)
+            # Check if cached binaries match the required version
+            if self._check_cache(release_info, asset):
+                self._log("Using cached llama.cpp binaries.")
+            else:
+                if not self._internet_available():
+                    raise RuntimeError(
+                        "No cached binary available and unable to fetch from the internet."
+                    )
+                self._download_and_unzip(asset["browser_download_url"], asset_name)
+                self._update_cache_info(release_info, asset)
+
+        except Exception as e:
+            self._log(f"Error during binary installation: {e}")
+            raise
 
         return os.path.join(self.cache_dir, "llama_cpp")
 
-    def _get_latest_release(self):
+    def _get_release_info(self):
         """
-        Fetch the latest release of llama.cpp from GitHub.
-
+        Fetch metadata of the specified release (pinned or latest) from GitHub.
         Returns:
             dict: Release information.
         """
-        api_url = "https://api.github.com/repos/ggerganov/llama.cpp/releases/latest"
+        if self.pinned_version:
+            api_url = f"https://api.github.com/repos/ggerganov/llama.cpp/releases/tags/{self.pinned_version}"
+        else:
+            api_url = "https://api.github.com/repos/ggerganov/llama.cpp/releases/latest"
+
+        if not self._internet_available():
+            # Fall back to cache if no internet access
+            raise RuntimeError("No internet access and no cached version available.")
+
         response = requests.get(api_url)
         if response.status_code == 200:
             return response.json()
         else:
-            raise RuntimeError(
-                f"Failed to fetch release info. Status code: {response.status_code}"
-            )
+            error_reason = f"Failed to fetch release info: HTTP {response.status_code}"
+            raise RuntimeError(error_reason)
 
     def _get_appropriate_asset(self, assets):
         """
         Select the appropriate binary asset for the current system.
-
         Args:
             assets (list): List of asset metadata from the release.
-
         Returns:
             dict or None: Matching asset metadata, or None if no match found.
         """
@@ -168,13 +187,11 @@ class LlamaCpp:
     def _check_cache(self, release_info, asset):
         """
         Check whether the latest binaries are already cached.
-
         Args:
             release_info (dict): Metadata of the latest release.
             asset (dict): Metadata of the selected asset.
-
         Returns:
-            bool: True if the cached binary matches the latest release, False otherwise.
+            bool: True if the cached binary matches the required release, False otherwise.
         """
         cache_info_path = os.path.join(self.cache_dir, "cache_info.json")
         if os.path.exists(cache_info_path):
@@ -190,7 +207,6 @@ class LlamaCpp:
     def _download_and_unzip(self, url, asset_name):
         """
         Download and extract llama.cpp binaries.
-
         Args:
             url (str): URL of the asset to download.
             asset_name (str): Name of the asset file.
@@ -205,7 +221,6 @@ class LlamaCpp:
             self._log(f"Successfully downloaded: {asset_name}")
         else:
             raise RuntimeError(f"Failed to download binary: {url}")
-
         extract_dir = os.path.join(self.cache_dir, "llama_cpp")
         with zipfile.ZipFile(zip_path, "r") as zip_ref:
             zip_ref.extractall(extract_dir)
@@ -214,7 +229,6 @@ class LlamaCpp:
     def _update_cache_info(self, release_info, asset):
         """
         Update cache metadata with the downloaded release info.
-
         Args:
             release_info (dict): Metadata of the latest release.
             asset (dict): Metadata of the downloaded asset.
@@ -224,10 +238,21 @@ class LlamaCpp:
         with open(cache_info_path, "w") as f:
             json.dump(cache_info, f)
 
+    def _internet_available(self):
+        """
+        Check for internet connectivity.
+        Returns:
+            bool: True if the internet is accessible, False otherwise.
+        """
+        try:
+            requests.get("https://api.github.com", timeout=3)
+            return True
+        except requests.ConnectionError:
+            return False
+
     def _log(self, message):
         """
         Print a log message if verbosity is enabled.
-
         Args:
             message (str): Log message to print.
         """

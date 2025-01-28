@@ -1,7 +1,14 @@
 [project]
 name = "llama-cpp-runner"
 version = "0.1.0"
-description = "Add your description here"
+description = "A runner for llama-cpp"
 readme = "README.md"
+authors = [
+    { name = "Timothy Jaeryang Baek", email = "tim@openwebui.com" }
+]
 requires-python = ">=3.11"
 dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

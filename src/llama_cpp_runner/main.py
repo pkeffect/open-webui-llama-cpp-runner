@@ -50,9 +50,13 @@ class LlamaCppServer:
     def url(self):
         """Return the URL where the server is running."""
         if self._server_url is None:
-            raise ValueError(
-                "Server is not running. Start the server with a valid GGUF path."
-            )
+            # If the server URL is not available, ensure the server spins up again
+            self._log("Server is off. Restarting the server...")
+            self._start_server_in_thread()
+            self._start_auto_terminate_thread()
+            # Wait for the thread to start the server
+            while self._server_url is None:
+                time.sleep(1)
         # Update the last-used timestamp whenever this property is accessed
         self.last_used = time.time()
         return self._server_url
@@ -74,17 +78,19 @@ class LlamaCppServer:
     def chat_completion(self, payload):
         """Send a chat completion request to the server."""
         if self._server_url is None:
-            raise RuntimeError(
-                "Server is not running. Start the server before making requests."
+            self._log(
+                "Server is off. Restarting the server before making the request..."
             )
-
+            self._start_server_in_thread()
+            self._start_auto_terminate_thread()
+            # Wait for the thread to start the server
+            while self._server_url is None:
+                time.sleep(1)
         # Reset the last-used timestamp
         self.last_used = time.time()
-
         endpoint = f"{self._server_url}/v1/chat/completions"
         self._log(f"Sending chat completion request to {endpoint}...")
         response = requests.post(endpoint, json=payload)
-
         if response.status_code == 200:
             self._log("Request successful.")
             return response.json()
@@ -136,16 +142,13 @@ class LlamaCppServer:
             raise ValueError(
                 f"GGUF model path is not specified or invalid: {self.gguf_path}"
             )
-
         server_binary = os.path.join(
             self.llama_cpp_path, "build", "bin", "llama-server"
         )
         if not os.path.exists(server_binary):
             raise FileNotFoundError(f"Server binary not found: {server_binary}")
-
         # Ensure the binary is executable
         self._set_executable(server_binary)
-
         # Find an available port
         self.port = self._find_available_port(start_port=10000)
         if self.port is None:

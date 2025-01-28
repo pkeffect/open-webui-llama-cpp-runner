@@ -1,4 +1,4 @@
-# 🦙 llama-cpp-runner: Effortless Usage of llama.cpp Models
+# 🦙 llama-cpp-runner
 
 `llama-cpp-runner` is the ultimate Python library for running [llama.cpp](https://github.com/ggerganov/llama.cpp) with zero hassle. It automates the process of downloading prebuilt binaries from the upstream repo, keeping you always **up to date** with the latest developments. All while requiring no complicated setups—everything works **out-of-the-box**.
 

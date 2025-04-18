@@ -1,0 +1,15 @@
+services:
+  llama-cpp-runner:
+    build: .
+    container_name: owui-llama-cpp-runner
+    ports:
+      - "3636:3636"
+    volumes:
+      - ./models:/models
+      - ./cache:/cache
+    environment:
+      - MODELS_DIR=/models
+      - CACHE_DIR=/cache
+      - VERBOSE=true
+      - TIMEOUT_MINUTES=30
+    restart: unless-stopped

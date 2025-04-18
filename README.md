@@ -25,6 +25,20 @@ Installing `llama-cpp-runner` is quick and easy! Just use pip:
 pip install llama-cpp-runner
 ```
 
+## Optional Installation (Docker)
+
+Clone the repository 
+
+```bash
+git clone https://github.com/open-webui/llama-cpp-runner
+```
+
+Build and run
+
+```bash
+docker compose up -d
+```
+
 ## Usage 📖
 
 ### Initialize the Runner

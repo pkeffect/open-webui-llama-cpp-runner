@@ -1,15 +1,23 @@
 services:
-  llama-cpp-runner:
+  owui-llama-cpp-runner:
     build: .
     container_name: owui-llama-cpp-runner
     ports:
       - "3636:3636"
     volumes:
-      - ./models:/models
-      - ./cache:/cache
+      - ./models:/models # local mount
+      - ./cache:/cache   # local mount
+    # Remove . from the paths above to use native docker volumes
     environment:
       - MODELS_DIR=/models
       - CACHE_DIR=/cache
       - VERBOSE=true
       - TIMEOUT_MINUTES=30
+      - LD_LIBRARY_PATH=/cache/llama_cpp/build/bin
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3636/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s

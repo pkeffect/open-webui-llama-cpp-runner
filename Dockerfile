@@ -2,26 +2,27 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install essential packages
-RUN apt-get update && apt-get install -y \
+# Install only essential packages and clean up in one layer to reduce image size
+RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     wget \
     git \
     build-essential \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy the project files
-COPY . /app/
+# Copy only necessary files
+COPY pyproject.toml README.md LICENSE /app/
+COPY src/ /app/src/
 
-# Install the package
-RUN pip install --no-cache-dir -e .
-RUN pip install requests
+# Install the package in development mode and required dependencies
+RUN pip install --no-cache-dir -e . && pip install --no-cache-dir requests fastapi uvicorn
 
-# Create a volume mount point for models and cache
+# Create volume mount points
 VOLUME /models
 VOLUME /cache
 
-# Create a proxy server script
+# Create proxy server script directly in the Dockerfile
 RUN echo 'import os\n\
 import uvicorn\n\
 from fastapi import FastAPI, Request\n\
@@ -100,16 +101,17 @@ if __name__ == "__main__":\n\
     print(f"Available models: {models}")\n\
     if not models:\n\
         print("WARNING: No models found in the models directory.")\n\
-    uvicorn.run(app, host="0.0.0.0", port=3636)\n' > /app/proxy_server.py
-
-# Install FastAPI and Uvicorn
-RUN pip install --no-cache-dir fastapi uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=3636)' > /app/proxy_server.py
 
 # Expose the proxy server port
 EXPOSE 3636
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
+ENV MODELS_DIR=/models
+ENV CACHE_DIR=/cache
+ENV VERBOSE=true
+ENV TIMEOUT_MINUTES=30
 
 # Command to run when the container starts
 CMD ["python", "/app/proxy_server.py"]

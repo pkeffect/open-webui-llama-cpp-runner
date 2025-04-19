@@ -1,5 +1,9 @@
 FROM python:3.11-slim
 
+LABEL maintainer="Open WebUI (Timothy Jaeryang Baek)"
+LABEL description="LlamaCpp Runner - CPU version"
+LABEL version="0.0.1"
+
 WORKDIR /app
 
 # Install only essential packages and clean up in one layer to reduce image size
@@ -8,18 +12,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     git \
     build-essential \
+    ca-certificates \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 # Ensure pip is up to date
-RUN python -m pip install --upgrade pip
+RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel
 
 # Copy only necessary files
 COPY pyproject.toml README.md LICENSE /app/
 COPY src/ /app/src/
 
 # Install basic dependencies first
-RUN pip install --no-cache-dir requests fastapi uvicorn
+RUN pip install --no-cache-dir "requests>=2.28.0" "fastapi>=0.95.0" "uvicorn>=0.21.0"
 
 # Then install the package in development mode
 RUN pip install --no-cache-dir -e .
@@ -28,101 +33,22 @@ RUN pip install --no-cache-dir -e .
 VOLUME /models
 VOLUME /cache
 
-# Create proxy server script directly in the Dockerfile
-RUN echo 'import os\n\
-import uvicorn\n\
-from fastapi import FastAPI, Request\n\
-from fastapi.responses import StreamingResponse, JSONResponse\n\
-from llama_cpp_runner.main import LlamaCpp\n\
-\n\
-app = FastAPI(title="LlamaCpp Proxy")\n\
-\n\
-# Initialize the LlamaCpp class\n\
-models_dir = os.environ.get("MODELS_DIR", "/models")\n\
-cache_dir = os.environ.get("CACHE_DIR", "/cache")\n\
-verbose = os.environ.get("VERBOSE", "true").lower() == "true"\n\
-timeout = int(os.environ.get("TIMEOUT_MINUTES", "30"))\n\
-\n\
-print(f"Models directory: {models_dir}")\n\
-print(f"Cache directory: {cache_dir}")\n\
-\n\
-# Create the LlamaCpp instance\n\
-llama_runner = LlamaCpp(\n\
-    models_dir=models_dir,\n\
-    cache_dir=cache_dir, \n\
-    verbose=verbose, \n\
-    timeout_minutes=timeout\n\
-)\n\
-\n\
-@app.get("/")\n\
-def read_root():\n\
-    """Get server status and list of available models."""\n\
-    return {"status": "running", "models": llama_runner.list_models()}\n\
-\n\
-@app.post("/v1/chat/completions")\n\
-async def chat_completions(request: Request):\n\
-    """Forward chat completion requests to the LlamaCpp server."""\n\
-    try:\n\
-        body = await request.json()\n\
-        \n\
-        if "model" not in body:\n\
-            return JSONResponse(\n\
-                status_code=400,\n\
-                content={"error": "Model not specified in request"}\n\
-            )\n\
-        \n\
-        try:\n\
-            result = llama_runner.chat_completion(body)\n\
-            \n\
-            # Handle streaming responses\n\
-            if body.get("stream", False):\n\
-                async def generate():\n\
-                    for line in result:\n\
-                        if line:\n\
-                            yield f"data: {line}\\n\\n"\n\
-                    yield "data: [DONE]\\n\\n"\n\
-                \n\
-                return StreamingResponse(generate(), media_type="text/event-stream")\n\
-            else:\n\
-                return result\n\
-        except Exception as e:\n\
-            return JSONResponse(\n\
-                status_code=500,\n\
-                content={"error": str(e)}\n\
-            )\n\
-    except Exception as e:\n\
-        return JSONResponse(\n\
-            status_code=400,\n\
-            content={"error": f"Invalid request: {str(e)}"}\n\
-        )\n\
-\n\
-@app.get("/models")\n\
-def list_models():\n\
-    """List all available models."""\n\
-    return {"models": llama_runner.list_models()}\n\
-\n\
-@app.get("/health")\n\
-def health_check():\n\
-    """Health check endpoint."""\n\
-    return {"status": "ok"}\n\
-\n\
-if __name__ == "__main__":\n\
-    print("Starting LlamaCpp Proxy Server on port 10000")\n\
-    models = llama_runner.list_models()\n\
-    print(f"Available models: {models}")\n\
-    if not models:\n\
-        print("WARNING: No models found in the models directory.")\n\
-    uvicorn.run(app, host="0.0.0.0", port=10000)' > /app/proxy_server.py
-
-# Expose the proxy server port
+# Expose the API port
 EXPOSE 10000
 
-# Set environment variables
+# Set environment variables with reasonable defaults
 ENV PYTHONUNBUFFERED=1
 ENV MODELS_DIR=/models
 ENV CACHE_DIR=/cache
 ENV VERBOSE=true
 ENV TIMEOUT_MINUTES=30
+ENV PORT=10000
+ENV HOST=0.0.0.0
+ENV LOG_LEVEL=info
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD curl -f http://localhost:${PORT}/health || exit 1
 
 # Command to run when the container starts
-CMD ["python", "/app/proxy_server.py"]
+CMD ["python", "-m", "llama_cpp_runner.main", "--models-dir", "${MODELS_DIR}", "--cache-dir", "${CACHE_DIR}", "--port", "${PORT}", "--host", "${HOST}", "--timeout", "${TIMEOUT_MINUTES}", "--log-level", "${LOG_LEVEL}", "--verbose"]

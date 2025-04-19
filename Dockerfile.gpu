@@ -1,5 +1,9 @@
 FROM nvidia/cuda:12.2.0-runtime-ubuntu22.04
 
+LABEL maintainer="Open WebUI (Timothy Jaeryang Baek)"
+LABEL description="LlamaCpp Runner - GPU accelerated version"
+LABEL version="0.0.1"
+
 WORKDIR /app
 
 # Install essential packages and build dependencies with proper cleanup in a single layer
@@ -16,6 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-wheel \
     patchelf \
     findutils \
+    ca-certificates \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -25,197 +30,79 @@ RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
     ln -sf /usr/bin/python3 /usr/bin/python
 
 # Ensure pip is up to date
-RUN python3 -m pip install --upgrade pip
+RUN python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel
 
 # Copy only necessary files for installation
 COPY pyproject.toml README.md LICENSE /app/
 COPY src/ /app/src/
 
 # Install basic dependencies first
-RUN pip3 install --no-cache-dir requests fastapi uvicorn
+RUN pip3 install --no-cache-dir "requests>=2.28.0" "fastapi>=0.95.0" "uvicorn>=0.21.0"
 
 # Then install the package in development mode
 RUN pip3 install --no-cache-dir -e .
 
-# Install PyTorch separately with verbose output and retry mechanism
-RUN pip3 install --no-cache-dir --verbose torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 || \
-    pip3 install --no-cache-dir --verbose torch torchvision torchaudio
+# Install PyTorch (optional, for improved compatibility with some models)
+RUN pip3 install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 
 # Create volume mount points
 VOLUME /models
 VOLUME /cache
 
-# Create GPU-compatible proxy server script
-RUN echo 'import os\n\
-import uvicorn\n\
-from fastapi import FastAPI, Request\n\
-from fastapi.responses import StreamingResponse, JSONResponse\n\
-from llama_cpp_runner.main import LlamaCpp\n\
-\n\
-app = FastAPI(title="LlamaCpp Proxy")\n\
-\n\
-# Initialize the LlamaCpp class\n\
-models_dir = os.environ.get("MODELS_DIR", "/models")\n\
-cache_dir = os.environ.get("CACHE_DIR", "/cache")\n\
-verbose = os.environ.get("VERBOSE", "true").lower() == "true"\n\
-timeout = int(os.environ.get("TIMEOUT_MINUTES", "30"))\n\
-enable_gpu = os.environ.get("ENABLE_GPU", "true").lower() == "true"\n\
-gpu_layers = int(os.environ.get("GPU_LAYERS", "-1"))  # -1 means all layers on GPU\n\
-\n\
-print(f"Models directory: {models_dir}")\n\
-print(f"Cache directory: {cache_dir}")\n\
-print(f"GPU enabled: {enable_gpu}")\n\
-print(f"GPU layers: {gpu_layers}")\n\
-\n\
-# Create the LlamaCpp instance\n\
-llama_runner = LlamaCpp(\n\
-    models_dir=models_dir,\n\
-    cache_dir=cache_dir, \n\
-    verbose=verbose, \n\
-    timeout_minutes=timeout,\n\
-    enable_gpu=enable_gpu,\n\
-    gpu_layers=gpu_layers\n\
-)\n\
-\n\
-@app.get("/")\n\
-def read_root():\n\
-    """Get server status and list of available models."""\n\
-    return {"status": "running", "models": llama_runner.list_models(), "gpu_enabled": enable_gpu}\n\
-\n\
-@app.post("/v1/chat/completions")\n\
-async def chat_completions(request: Request):\n\
-    """Forward chat completion requests to the LlamaCpp server."""\n\
-    try:\n\
-        body = await request.json()\n\
-        \n\
-        if "model" not in body:\n\
-            return JSONResponse(\n\
-                status_code=400,\n\
-                content={"error": "Model not specified in request"}\n\
-            )\n\
-        \n\
-        try:\n\
-            result = llama_runner.chat_completion(body)\n\
-            \n\
-            # Handle streaming responses\n\
-            if body.get("stream", False):\n\
-                async def generate():\n\
-                    for line in result:\n\
-                        if line:\n\
-                            yield f"data: {line}\\n\\n"\n\
-                    yield "data: [DONE]\\n\\n"\n\
-                \n\
-                return StreamingResponse(generate(), media_type="text/event-stream")\n\
-            else:\n\
-                return result\n\
-        except Exception as e:\n\
-            return JSONResponse(\n\
-                status_code=500,\n\
-                content={"error": str(e)}\n\
-            )\n\
-    except Exception as e:\n\
-        return JSONResponse(\n\
-            status_code=400,\n\
-            content={"error": f"Invalid request: {str(e)}"}\n\
-        )\n\
-\n\
-@app.get("/models")\n\
-def list_models():\n\
-    """List all available models."""\n\
-    return {"models": llama_runner.list_models()}\n\
-\n\
-@app.get("/health")\n\
-def health_check():\n\
-    """Health check endpoint."""\n\
-    return {"status": "ok"}\n\
-\n\
-@app.get("/gpu/info")\n\
-def gpu_info():\n\
-    """Get GPU information if available."""\n\
-    gpu_status = {"enabled": enable_gpu, "layers": gpu_layers}\n\
-    if enable_gpu:\n\
-        try:\n\
-            import subprocess\n\
-            nvidia_smi = subprocess.run(["nvidia-smi"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)\n\
-            if nvidia_smi.returncode == 0:\n\
-                gpu_status["nvidia_smi"] = nvidia_smi.stdout\n\
-        except Exception as e:\n\
-            gpu_status["error"] = str(e)\n\
-    return gpu_status\n\
-\n\
-if __name__ == "__main__":\n\
-    print("Starting LlamaCpp Proxy Server on port 10000")\n\
-    models = llama_runner.list_models()\n\
-    print(f"Available models: {models}")\n\
-    if not models:\n\
-        print("WARNING: No models found in the models directory.")\n\
-    uvicorn.run(app, host="0.0.0.0", port=10000)' > /app/proxy_server.py
-
 # Copy setup script
 COPY scripts/setup_libs.sh /app/setup_libs.sh
 RUN chmod +x /app/setup_libs.sh
 
-# Create wrapper script to check for GPU availability and set up libraries before starting
+# Create a startup script that sets up the environment
 RUN echo '#!/bin/bash\n\
-echo "Setting up shared libraries..."\n\
+echo "Setting up GPU environment..."\n\
+\n\
+# Run library setup script\n\
 /app/setup_libs.sh\n\
 \n\
-# Add multiple paths to LD_LIBRARY_PATH to be safe\n\
+# Add library paths to LD_LIBRARY_PATH\n\
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/cache/llama_cpp/build/lib:/cache/llama_cpp/build/bin:/usr/local/cuda/lib64\n\
 \n\
-# Create additional symbolic links if needed\n\
-LLAMA_LIB_PATHS=(\n\
-  "/cache/llama_cpp/build/lib/libllama.so"\n\
-  "/cache/llama_cpp/build/libllama.so"\n\
-  "/cache/llama_cpp/libllama.so"\n\
-  "/cache/llama_cpp/build/bin/libllama.so"\n\
-)\n\
-\n\
-for LIB_PATH in "${LLAMA_LIB_PATHS[@]}"; do\n\
-  if [ -f "$LIB_PATH" ] && [ ! -f "/usr/lib/libllama.so" ]; then\n\
-    echo "Creating symbolic link from $LIB_PATH to /usr/lib/libllama.so"\n\
-    ln -sf "$LIB_PATH" /usr/lib/libllama.so\n\
-    break\n\
-  fi\n\
-done\n\
-\n\
-# If we still cannot find the library, search for it\n\
-if [ ! -f "/usr/lib/libllama.so" ]; then\n\
-  echo "Searching for libllama.so in cache directory..."\n\
-  FOUND_LIB=$(find /cache -name "libllama.so" 2>/dev/null | head -n 1)\n\
-  if [ -n "$FOUND_LIB" ]; then\n\
-    echo "Found library at: $FOUND_LIB"\n\
-    ln -sf "$FOUND_LIB" /usr/lib/libllama.so\n\
-  else\n\
-    echo "WARNING: Could not find libllama.so anywhere in the cache directory!"\n\
-  fi\n\
-fi\n\
-\n\
+# Check GPU availability\n\
 if [ "$ENABLE_GPU" = "true" ]; then\n\
-    # Check if NVIDIA drivers are available\n\
-    if ! command -v nvidia-smi &> /dev/null; then\n\
-        echo "WARNING: NVIDIA drivers not found but GPU mode is enabled. Continuing anyway..."\n\
-    else\n\
+    if command -v nvidia-smi &> /dev/null; then\n\
         echo "NVIDIA GPU detected:"\n\
         nvidia-smi\n\
+    else\n\
+        echo "WARNING: NVIDIA drivers not found but GPU mode is enabled!"\n\
+        echo "Will attempt to continue, but GPU acceleration may not work."\n\
     fi\n\
 else\n\
     echo "GPU support disabled by configuration."\n\
 fi\n\
 \n\
-# Print environment for debugging\n\
-echo "Current environment:"\n\
-echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH"\n\
-echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"\n\
+# Print current environment\n\
+echo "Environment:"\n\
+echo "  MODELS_DIR=$MODELS_DIR"\n\
+echo "  CACHE_DIR=$CACHE_DIR"\n\
+echo "  TIMEOUT_MINUTES=$TIMEOUT_MINUTES"\n\
+echo "  ENABLE_GPU=$ENABLE_GPU"\n\
+echo "  GPU_LAYERS=$GPU_LAYERS"\n\
+echo "  PORT=$PORT"\n\
+echo "  HOST=$HOST"\n\
+echo "  LOG_LEVEL=$LOG_LEVEL"\n\
 \n\
-# Start the proxy server\n\
-echo "Starting proxy server..."\n\
-python /app/proxy_server.py\n' > /app/start.sh && chmod +x /app/start.sh
+# Start the server\n\
+echo "Starting server..."\n\
+if [ "$ENABLE_GPU" = "true" ]; then\n\
+    python -m llama_cpp_runner.main --models-dir "$MODELS_DIR" --cache-dir "$CACHE_DIR" \\\n\
+        --port "$PORT" --host "$HOST" --timeout "$TIMEOUT_MINUTES" \\\n\
+        --log-level "$LOG_LEVEL" --verbose --gpu --gpu-layers "$GPU_LAYERS"\n\
+else\n\
+    python -m llama_cpp_runner.main --models-dir "$MODELS_DIR" --cache-dir "$CACHE_DIR" \\\n\
+        --port "$PORT" --host "$HOST" --timeout "$TIMEOUT_MINUTES" \\\n\
+        --log-level "$LOG_LEVEL" --verbose\n\
+fi\n' > /app/start.sh && chmod +x /app/start.sh
 
-# Expose the server port
+# Expose the API port
 EXPOSE 10000
 
-# Set environment variables with GPU defaults
+# Set environment variables with reasonable defaults
 ENV PYTHONUNBUFFERED=1
 ENV MODELS_DIR=/models
 ENV CACHE_DIR=/cache
@@ -223,7 +110,14 @@ ENV VERBOSE=true
 ENV TIMEOUT_MINUTES=30
 ENV ENABLE_GPU=true
 ENV GPU_LAYERS=-1
+ENV PORT=10000
+ENV HOST=0.0.0.0
+ENV LOG_LEVEL=info
 ENV CUDA_VISIBLE_DEVICES=0
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:${PORT}/health || exit 1
 
 # Command to run when the container starts
 CMD ["/app/start.sh"]

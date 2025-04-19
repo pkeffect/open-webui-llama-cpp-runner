@@ -1,77 +1,131 @@
+#!/usr/bin/env python3
 """
-LlamaCpp Proxy Server (CPU Version)
+Unified LlamaCpp Proxy Server
 
-This script provides a FastAPI server for llama-cpp-runner with
-beautiful formatting, consistent endpoints, and proper logging.
+This script provides a FastAPI server for llama-cpp-runner with 
+support for both CPU and GPU modes, beautiful formatting, 
+consistent endpoints, and proper logging.
 """
 
 import os
 import sys
-import uvicorn
-from fastapi import FastAPI
+import argparse
+from typing import Dict, Any
 
-# Import our modules
-from llama_cpp_runner.main import LlamaCpp
-from llama_cpp_runner.api import create_api
+# Import our unified API
+from llama_cpp_runner.main import run_server, DEFAULT_CONFIG
 from llama_cpp_runner.logger import setup_logger, get_logger
 
-# Configure logging
-logger = setup_logger("llama_cpp_runner.server", console=True, file=True)
-
-# Print banner
-print("\n" + "=" * 60)
-print("🦙 LlamaCpp Proxy Server (CPU Version)")
-print("=" * 60 + "\n")
-
-# Get environment variables
-models_dir = os.environ.get("MODELS_DIR", "/models")
-cache_dir = os.environ.get("CACHE_DIR", "/cache")
-verbose = os.environ.get("VERBOSE", "true").lower() == "true"
-timeout = int(os.environ.get("TIMEOUT_MINUTES", "30"))
-
-# Log configuration
-logger.info(f"🗂️  Models directory: {models_dir}")
-logger.info(f"💾 Cache directory: {cache_dir}")
-logger.info(f"🔊 Verbose mode: {verbose}")
-logger.info(f"⏱️  Timeout: {timeout} minutes")
-
-# Create the LlamaCpp instance
-try:
-    logger.info("🔄 Initializing LlamaCpp...")
-    llama_runner = LlamaCpp(
-        models_dir=models_dir,
-        cache_dir=cache_dir, 
-        verbose=verbose, 
-        timeout_minutes=timeout
+def main():
+    """Main entry point for the proxy server"""
+    parser = argparse.ArgumentParser(description="LlamaCpp Proxy Server")
+    
+    parser.add_argument(
+        "--models-dir",
+        default=os.environ.get("MODELS_DIR", DEFAULT_CONFIG["models_dir"]),
+        help="Directory containing GGUF models"
     )
     
-    # List available models
-    models = llama_runner.list_models()
-    if models:
-        logger.info(f"📚 Found {len(models)} models: {', '.join(models)}")
-    else:
-        logger.warning("⚠️  No models found in the models directory!")
+    parser.add_argument(
+        "--cache-dir",
+        default=os.environ.get("CACHE_DIR", DEFAULT_CONFIG["cache_dir"]),
+        help="Directory for caching llama.cpp binaries"
+    )
     
-    # Create the API with our unified API module
-    logger.info("🔄 Creating API...")
-    app = create_api(llama_runner, enable_gpu=False)
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.environ.get("PORT", DEFAULT_CONFIG["port"])),
+        help="Port to run the server on"
+    )
     
-except Exception as e:
-    logger.error(f"❌ Failed to initialize LlamaCpp: {e}")
-    sys.exit(1)
-
-# Print registered routes for debugging
-if verbose:
-    logger.info("📋 Registered API endpoints:")
-    for route in app.routes:
-        methods = ", ".join(route.methods) if hasattr(route, "methods") and route.methods else "GET"
-        logger.info(f"  • {methods:7} {route.path}")
+    parser.add_argument(
+        "--host",
+        default=os.environ.get("HOST", DEFAULT_CONFIG["host"]),
+        help="Host to bind the server to"
+    )
+    
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=int(os.environ.get("TIMEOUT_MINUTES", DEFAULT_CONFIG["timeout_minutes"])),
+        help="Timeout in minutes for shutting down idle servers"
+    )
+    
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        default=os.environ.get("VERBOSE", "").lower() == "true",
+        help="Enable verbose logging"
+    )
+    
+    parser.add_argument(
+        "--log-level",
+        choices=["debug", "info", "warning", "error", "critical"],
+        default=os.environ.get("LOG_LEVEL", DEFAULT_CONFIG["log_level"]),
+        help="Logging level"
+    )
+    
+    parser.add_argument(
+        "--gpu",
+        action="store_true",
+        default=os.environ.get("ENABLE_GPU", "").lower() == "true",
+        help="Enable GPU acceleration"
+    )
+    
+    parser.add_argument(
+        "--gpu-layers",
+        type=int,
+        default=int(os.environ.get("GPU_LAYERS", DEFAULT_CONFIG["gpu_layers"])),
+        help="Number of layers to offload to GPU (-1 for all)"
+    )
+    
+    args = parser.parse_args()
+    
+    # Print banner
+    banner_type = "GPU-accelerated" if args.gpu else "CPU"
+    print("\n" + "=" * 60)
+    print(f"🦙 LlamaCpp Proxy Server ({banner_type} Version)")
+    print("=" * 60 + "\n")
+    
+    # Configure logging
+    setup_logger(
+        "llama_cpp_runner", 
+        level=args.log_level.upper(), 
+        console=True, 
+        file=args.verbose
+    )
+    
+    logger = get_logger("proxy_server")
+    
+    # Convert args to config
+    config = {
+        "models_dir": args.models_dir,
+        "cache_dir": args.cache_dir,
+        "port": args.port,
+        "host": args.host,
+        "timeout_minutes": args.timeout,
+        "verbose": args.verbose,
+        "log_level": args.log_level,
+        "enable_gpu": args.gpu,
+        "gpu_layers": args.gpu_layers
+    }
+    
+    # Log configuration
+    logger.info(f"🗂️  Models directory: {config['models_dir']}")
+    logger.info(f"💾 Cache directory: {config['cache_dir']}")
+    logger.info(f"🔊 Verbose mode: {config['verbose']}")
+    logger.info(f"⏱️  Timeout: {config['timeout_minutes']} minutes")
+    logger.info(f"🖥️  GPU enabled: {config['enable_gpu']}")
+    if config['enable_gpu']:
+        logger.info(f"🔢 GPU layers: {config['gpu_layers']}")
+    
+    # Run the server
+    try:
+        run_server(config)
+    except Exception as e:
+        logger.error(f"❌ Failed to start server: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
-    # Print server URL
-    logger.info("\n🚀 Starting LlamaCpp Proxy Server on port 10000")
-    logger.info("🌐 Server will be available at: http://localhost:10000")
-    logger.info("🔍 Try: curl http://localhost:10000/health\n")
-    
-    # Start the server
-    uvicorn.run(app, host="0.0.0.0", port=10000)
+    main()

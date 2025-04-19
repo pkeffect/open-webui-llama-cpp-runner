@@ -1,4 +1,4 @@
-llama_cpp_cache/*
-cache/*
-dist/*
+llama_cpp_cache/
+cache/
+dist/
 models/*

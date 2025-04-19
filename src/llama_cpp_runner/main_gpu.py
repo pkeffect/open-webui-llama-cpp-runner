@@ -58,45 +58,112 @@ class LlamaCppServer(OriginalLlamaCppServer):
             if self.enable_gpu:
                 print(f"[LlamaCppServer] GPU layers: {self.gpu_layers}")
     
-    def _start_server(self):
-        """Overridden start server method with GPU support."""
-        if not self.gguf_path or (
-            not self.hugging_face and not os.path.exists(self.gguf_path)
-        ):
-            raise ValueError(
-                f"GGUF model path is not specified or invalid: {self.gguf_path}"
-            )
-
-        server_binary = os.path.join(
-            self.llama_cpp_path, "build", "bin", "llama-server"
+def _start_server(self):
+    if not self.gguf_path or (
+        not self.hugging_face and not os.path.exists(self.gguf_path)
+    ):
+        raise ValueError(
+            f"GGUF model path is not specified or invalid: {self.gguf_path}"
         )
-        if not os.path.exists(server_binary):
-            raise FileNotFoundError(f"Server binary not found: {server_binary}")
 
-        # Ensure the binary is executable
-        self._set_executable(server_binary)
+    server_binary = os.path.join(
+        self.llama_cpp_path, "build", "bin", "llama-server"
+    )
+    if not os.path.exists(server_binary):
+        raise FileNotFoundError(f"Server binary not found: {server_binary}")
+
+    # Ensure the binary is executable
+    self._set_executable(server_binary)
+
+    # Find an available port
+    self.port = self._find_available_port(start_port=10000)
+    if self.port is None:
+        raise RuntimeError("No available port found between 10000 and 11000.")
+
+    self._log(f"Starting server with binary: {server_binary}")
+    self._log(f"Using GGUF path: {self.gguf_path}")
+    self._log(f"Using port: {self.port}")
+    self._log(f"GPU enabled: {self.enable_gpu}")
+    
+    # IMPORTANT: Force GPU usage with explicit parameters
+    commands = [
+        server_binary, 
+        "-m", self.gguf_path, 
+        "--port", str(self.port),
+        "--n-gpu-layers", "-1",  # Force maximum GPU layers
+        "-ngl", "999",            # Alternative flag for GPU layers
+        "--tensor-split", "1.0",  # Force full GPU usage
+        "--gpu-layers", "999"     # Additional flag for GPU layers
+    ]
+
+    # Additional diagnostic logging
+    try:
+        # Check GPU capabilities using subprocess
+        gpu_info = subprocess.check_output(["nvidia-smi", "--query-gpu=count,name,memory.total", "--format=csv,noheader,nounits"], universal_newlines=True).strip()
+        self._log(f"GPU Info: {gpu_info}")
+    except Exception as e:
+        self._log(f"Error getting GPU info: {e}")
+
+    # Run the server with verbose output to force GPU usage
+    env = os.environ.copy()
+    env['CUDA_VISIBLE_DEVICES'] = '0'  # Explicitly set GPU device
+    env['CUDA_DEVICE'] = '0'
+
+    self.server_process = subprocess.Popen(
+        commands,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        universal_newlines=True,
+        env=env
+    )
+
+    # Capture and log all server output for GPU-related messages
+    gpu_detection_log = []
+    for line in iter(self.server_process.stdout.readline, ""):
+        line = line.strip()
+        self._log(f"SERVER OUTPUT: {line}")
+        gpu_detection_log.append(line)
         
-        # Set up library paths
-        self._setup_library_paths()
+        # Look for specific GPU-related messages
+        if any(gpu_keyword in line.lower() for gpu_keyword in [
+            'gpu', 'cuda', 'device', 'layer', 'tensor', 'offload'
+        ]):
+            self._log(f"GPU-RELATED MESSAGE: {line}")
+        
+        if "listening on" in line:
+            self._server_url = f"http://localhost:{self.port}"
+            self._log(f"Server is now accessible at {self._server_url}")
+            break
 
-        # Find an available port
-        self.port = self._find_available_port(start_port=10000)
-        if self.port is None:
-            raise RuntimeError("No available port found between 10000 and 11000.")
+    # If no server URL was found, raise an error with diagnostic information
+    if not self._server_url:
+        raise RuntimeError(f"Failed to start server. Diagnostic log:\n{'\n'.join(gpu_detection_log)}")
 
-        self._log(f"Starting server with binary: {server_binary}")
-        self._log(f"Using GGUF path: {self.gguf_path}")
-        self._log(f"Using port: {self.port}")
-        self._log(f"GPU enabled: {self.enable_gpu}")
-        if self.enable_gpu:
-            self._log(f"GPU layers: {self.gpu_layers}")
-
-        commands = [server_binary]
-        if self.hugging_face:
-            commands.extend(["-hf", self.gguf_path, "--port", str(self.port)])
-        else:
-            commands.extend(["-m", self.gguf_path, "--port", str(self.port)])
+def _get_gpu_capabilities(self):
+    """Comprehensive GPU capability check."""
+    gpu_info = {
+        'cuda_available': False,
+        'device_count': 0,
+        'device_name': None,
+        'memory_total': 0
+    }
+    
+    try:
+        # Use subprocess to get detailed GPU info
+        nvidia_output = subprocess.check_output(["nvidia-smi", "--query-gpu=count,name,memory.total", "--format=csv,noheader,nounits"], universal_newlines=True)
+        gpu_details = nvidia_output.strip().split(", ")
+        
+        if len(gpu_details) >= 3:
+            gpu_info['cuda_available'] = True
+            gpu_info['device_count'] = int(gpu_details[0])
+            gpu_info['device_name'] = gpu_details[1]
+            gpu_info['memory_total'] = int(gpu_details[2])
+    except Exception as e:
+        self._log(f"Error getting GPU capabilities: {e}")
+    
+    return gpu_info
             
+
         # Add GPU parameters if enabled
         if self.enable_gpu:
             # Check if CUDA is available
@@ -108,7 +175,7 @@ class LlamaCppServer(OriginalLlamaCppServer):
                     # Get the number of layers from the model metadata if available
                     # For now, use a reasonable default based on model size
                     model_size_mb = os.path.getsize(self.gguf_path) / (1024 * 1024)
-                    estimated_layers = 32  # Default for 8B models
+                    estimated_layers = -1
                     # Adjust based on model size
                     if model_size_mb > 10000:  # Larger than 10GB
                         estimated_layers = 80  # Likely a 70B model

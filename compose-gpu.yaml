@@ -5,14 +5,14 @@ services:
       dockerfile: Dockerfile.gpu
     container_name: owui-llama-cpp-runner-gpu
     ports:
-      - "3637:3636"  # Using a different port to avoid conflicts with CPU version
+      - "10000:10000"  # Using a different port to avoid conflicts with CPU version
     environment:
       - MODELS_DIR=/models
       - CACHE_DIR=/cache
       - VERBOSE=true
       - TIMEOUT_MINUTES=30
       - ENABLE_GPU=true
-      - N_GPU_LAYERS=32     # Explicitly set to use 32 layers (common for 8B models)
+      - GPU_LAYERS=-1 
       - CUDA_VISIBLE_DEVICES=0  # Specify which GPU to use (0 is the first GPU)
       - LD_LIBRARY_PATH=/cache/llama_cpp/build/lib:/cache/llama_cpp/build/bin:/usr/local/cuda/lib64:/usr/lib
     volumes:

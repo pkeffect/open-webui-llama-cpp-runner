@@ -30,7 +30,7 @@ COPY src/ /app/src/
 
 # Install the package and required dependencies
 RUN pip3 install --no-cache-dir -e . && \
-    pip3 install --no-cache-dir requests fastapi uvicorn
+    pip3 install --no-cache-dir requests fastapi uvicorn torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 
 # Create volume mount points
 VOLUME /models
@@ -130,12 +130,12 @@ def gpu_info():\n\
     return gpu_status\n\
 \n\
 if __name__ == "__main__":\n\
-    print("Starting LlamaCpp Proxy Server on port 3636")\n\
+    print("Starting LlamaCpp Proxy Server on port 3637")\n\
     models = llama_runner.list_models()\n\
     print(f"Available models: {models}")\n\
     if not models:\n\
         print("WARNING: No models found in the models directory.")\n\
-    uvicorn.run(app, host="0.0.0.0", port=3636)' > /app/proxy_server.py
+    uvicorn.run(app, host="0.0.0.0", port=10000)' > /app/proxy_server.py
 
 # Set environment variables with GPU defaults
 ENV PYTHONUNBUFFERED=1
@@ -144,7 +144,7 @@ ENV CACHE_DIR=/cache
 ENV VERBOSE=true
 ENV TIMEOUT_MINUTES=30
 ENV ENABLE_GPU=true
-ENV N_GPU_LAYERS=32
+ENV GPU_LAYERS=-1
 ENV CUDA_VISIBLE_DEVICES=0
 
 # Copy proxy server script and setup script
@@ -213,7 +213,7 @@ echo "Starting proxy server..."\n\
 python /app/proxy_server.py\n' > /app/start.sh && chmod +x /app/start.sh
 
 # Expose the server port
-EXPOSE 3636
+EXPOSE 10000
 
 # Command to run when the container starts
 CMD ["/app/start.sh"]

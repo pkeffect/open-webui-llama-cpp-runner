@@ -24,19 +24,28 @@ RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
     update-alternatives --set python3 /usr/bin/python3.11 && \
     ln -sf /usr/bin/python3 /usr/bin/python
 
+# Ensure pip is up to date
+RUN python3 -m pip install --upgrade pip
+
 # Copy only necessary files for installation
 COPY pyproject.toml README.md LICENSE /app/
 COPY src/ /app/src/
 
-# Install the package and required dependencies
-RUN pip3 install --no-cache-dir -e . && \
-    pip3 install --no-cache-dir requests fastapi uvicorn torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+# Install basic dependencies first
+RUN pip3 install --no-cache-dir requests fastapi uvicorn
+
+# Then install the package in development mode
+RUN pip3 install --no-cache-dir -e .
+
+# Install PyTorch separately with verbose output and retry mechanism
+RUN pip3 install --no-cache-dir --verbose torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 || \
+    pip3 install --no-cache-dir --verbose torch torchvision torchaudio
 
 # Create volume mount points
 VOLUME /models
 VOLUME /cache
 
-# Create proxy server script with GPU support flags
+# Create GPU-compatible proxy server script
 RUN echo 'import os\n\
 import uvicorn\n\
 from fastapi import FastAPI, Request\n\
@@ -115,6 +124,11 @@ def list_models():\n\
     """List all available models."""\n\
     return {"models": llama_runner.list_models()}\n\
 \n\
+@app.get("/health")\n\
+def health_check():\n\
+    """Health check endpoint."""\n\
+    return {"status": "ok"}\n\
+\n\
 @app.get("/gpu/info")\n\
 def gpu_info():\n\
     """Get GPU information if available."""\n\
@@ -130,30 +144,16 @@ def gpu_info():\n\
     return gpu_status\n\
 \n\
 if __name__ == "__main__":\n\
-    print("Starting LlamaCpp Proxy Server on port 3637")\n\
+    print("Starting LlamaCpp Proxy Server on port 10000")\n\
     models = llama_runner.list_models()\n\
     print(f"Available models: {models}")\n\
     if not models:\n\
         print("WARNING: No models found in the models directory.")\n\
     uvicorn.run(app, host="0.0.0.0", port=10000)' > /app/proxy_server.py
 
-# Set environment variables with GPU defaults
-ENV PYTHONUNBUFFERED=1
-ENV MODELS_DIR=/models
-ENV CACHE_DIR=/cache
-ENV VERBOSE=true
-ENV TIMEOUT_MINUTES=30
-ENV ENABLE_GPU=true
-ENV GPU_LAYERS=-1
-ENV CUDA_VISIBLE_DEVICES=0
-
-# Copy proxy server script and setup script
-COPY proxy_server.py /app/proxy_server_original.py
+# Copy setup script
 COPY scripts/setup_libs.sh /app/setup_libs.sh
 RUN chmod +x /app/setup_libs.sh
-
-# Create GPU-compatible proxy server
-COPY proxy_server_gpu.py /app/proxy_server.py
 
 # Create wrapper script to check for GPU availability and set up libraries before starting
 RUN echo '#!/bin/bash\n\
@@ -214,6 +214,16 @@ python /app/proxy_server.py\n' > /app/start.sh && chmod +x /app/start.sh
 
 # Expose the server port
 EXPOSE 10000
+
+# Set environment variables with GPU defaults
+ENV PYTHONUNBUFFERED=1
+ENV MODELS_DIR=/models
+ENV CACHE_DIR=/cache
+ENV VERBOSE=true
+ENV TIMEOUT_MINUTES=30
+ENV ENABLE_GPU=true
+ENV GPU_LAYERS=-1
+ENV CUDA_VISIBLE_DEVICES=0
 
 # Command to run when the container starts
 CMD ["/app/start.sh"]

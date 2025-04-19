@@ -11,12 +11,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
+# Ensure pip is up to date
+RUN python -m pip install --upgrade pip
+
 # Copy only necessary files
 COPY pyproject.toml README.md LICENSE /app/
 COPY src/ /app/src/
 
-# Install the package in development mode and required dependencies
-RUN pip install --no-cache-dir -e . && pip install --no-cache-dir requests fastapi uvicorn
+# Install basic dependencies first
+RUN pip install --no-cache-dir requests fastapi uvicorn
+
+# Then install the package in development mode
+RUN pip install --no-cache-dir -e .
 
 # Create volume mount points
 VOLUME /models
@@ -95,16 +101,21 @@ def list_models():\n\
     """List all available models."""\n\
     return {"models": llama_runner.list_models()}\n\
 \n\
+@app.get("/health")\n\
+def health_check():\n\
+    """Health check endpoint."""\n\
+    return {"status": "ok"}\n\
+\n\
 if __name__ == "__main__":\n\
-    print("Starting LlamaCpp Proxy Server on port 3636")\n\
+    print("Starting LlamaCpp Proxy Server on port 10000")\n\
     models = llama_runner.list_models()\n\
     print(f"Available models: {models}")\n\
     if not models:\n\
         print("WARNING: No models found in the models directory.")\n\
-    uvicorn.run(app, host="0.0.0.0", port=3636)' > /app/proxy_server.py
+    uvicorn.run(app, host="0.0.0.0", port=10000)' > /app/proxy_server.py
 
 # Expose the proxy server port
-EXPOSE 3636
+EXPOSE 10000
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1

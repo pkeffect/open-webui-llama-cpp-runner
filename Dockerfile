@@ -23,32 +23,45 @@ RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel
 COPY pyproject.toml README.md LICENSE /app/
 COPY src/ /app/src/
 
-# Install basic dependencies first
-RUN pip install --no-cache-dir "requests>=2.28.0" "fastapi>=0.95.0" "uvicorn>=0.21.0"
+# Install basic dependencies and the package in one layer to reduce image size
+RUN pip install --no-cache-dir "requests>=2.28.0" "fastapi>=0.95.0" "uvicorn>=0.21.0" && \
+    pip install --no-cache-dir -e .
 
-# Then install the package in development mode
-RUN pip install --no-cache-dir -e .
-
-# Create volume mount points
+# Create volume mount points and ensure they exist
+RUN mkdir -p /models /cache
 VOLUME /models
 VOLUME /cache
+
+# Create non-root user for better security
+RUN groupadd -r llamauser && useradd -r -g llamauser llamauser && \
+    chown -R llamauser:llamauser /app /models /cache
+
+# Switch to non-root user
+USER llamauser
 
 # Expose the API port
 EXPOSE 10000
 
 # Set environment variables with reasonable defaults
-ENV PYTHONUNBUFFERED=1
-ENV MODELS_DIR=/models
-ENV CACHE_DIR=/cache
-ENV VERBOSE=true
-ENV TIMEOUT_MINUTES=30
-ENV PORT=10000
-ENV HOST=0.0.0.0
-ENV LOG_LEVEL=info
+ENV PYTHONUNBUFFERED=1 \
+    MODELS_DIR=/models \
+    CACHE_DIR=/cache \
+    VERBOSE=true \
+    TIMEOUT_MINUTES=30 \
+    PORT=10000 \
+    HOST=0.0.0.0 \
+    LOG_LEVEL=info
 
-# Health check
+# Health check with improved resilience
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl -f http://localhost:${PORT}/health || exit 1
 
-# Command to run when the container starts
-CMD ["python", "-m", "llama_cpp_runner.main", "--models-dir", "${MODELS_DIR}", "--cache-dir", "${CACHE_DIR}", "--port", "${PORT}", "--host", "${HOST}", "--timeout", "${TIMEOUT_MINUTES}", "--log-level", "${LOG_LEVEL}", "--verbose"]
+# Use shell form for proper environment variable expansion
+CMD python -m llama_cpp_runner.unified_server \
+    --models-dir ${MODELS_DIR} \
+    --cache-dir ${CACHE_DIR} \
+    --port ${PORT} \
+    --host ${HOST} \
+    --timeout ${TIMEOUT_MINUTES} \
+    --log-level ${LOG_LEVEL} \
+    ${VERBOSE:+--verbose}

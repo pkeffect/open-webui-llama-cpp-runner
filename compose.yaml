@@ -1,16 +1,31 @@
-version: '3.8'
+# Common settings to be extended
+x-llama-common: &llama-common
+  restart: unless-stopped
+  volumes:
+    - ./models:/models  # local mount for models
+    - ./cache:/cache    # local mount for cache
+  ports:
+    - "10000:10000"
+  healthcheck:
+    test: ["CMD", "curl", "-f", "http://localhost:10000/health"]
+    interval: 30s
+    timeout: 10s
+    retries: 3
+    start_period: 40s
+  ulimits:
+    memlock: -1
+    nofile:
+      soft: 65536
+      hard: 65536
 
 services:
+  # CPU version
   llama-cpp-runner:
+    <<: *llama-common
     build: 
       context: .
       dockerfile: Dockerfile
     container_name: llama-cpp-runner
-    ports:
-      - "10000:10000"
-    volumes:
-      - ./models:/models # local mount for models
-      - ./cache:/cache   # local mount for cache
     environment:
       - MODELS_DIR=/models
       - CACHE_DIR=/cache
@@ -19,10 +34,43 @@ services:
       - PORT=10000
       - HOST=0.0.0.0
       - LOG_LEVEL=info
-    restart: unless-stopped
+    profiles:
+      - cpu
+      - default
+
+  # GPU version
+  llama-cpp-runner-gpu:
+    <<: *llama-common
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
+    container_name: llama-cpp-runner-gpu
+    environment:
+      - MODELS_DIR=/models
+      - CACHE_DIR=/cache
+      - VERBOSE=true
+      - TIMEOUT_MINUTES=30
+      - ENABLE_GPU=true
+      - GPU_LAYERS=-1
+      - PORT=10000
+      - HOST=0.0.0.0 
+      - LOG_LEVEL=info
+      - CUDA_VISIBLE_DEVICES=0
+      - LD_LIBRARY_PATH=/cache/llama_cpp/build/lib:/cache/llama_cpp/build/bin:/usr/local/cuda/lib64
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:10000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
+      # Allow longer startup time for GPU initialization
+      start_period: 60s
+    profiles:
+      - gpu
+
+# Use profiles for selective startup:
+# - `docker-compose up` starts the CPU version by default
+# - `docker-compose --profile gpu up` starts the GPU version
+# - `docker-compose --profile cpu up` explicitly starts the CPU version

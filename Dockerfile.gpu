@@ -36,16 +36,15 @@ RUN python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel
 COPY pyproject.toml README.md LICENSE /app/
 COPY src/ /app/src/
 
-# Install basic dependencies first
-RUN pip3 install --no-cache-dir "requests>=2.28.0" "fastapi>=0.95.0" "uvicorn>=0.21.0"
-
-# Then install the package in development mode
-RUN pip3 install --no-cache-dir -e .
+# Install dependencies and package in one layer to reduce image size
+RUN pip3 install --no-cache-dir "requests>=2.28.0" "fastapi>=0.95.0" "uvicorn>=0.21.0" && \
+    pip3 install --no-cache-dir -e .
 
 # Install PyTorch (optional, for improved compatibility with some models)
 RUN pip3 install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 
-# Create volume mount points
+# Create volume mount points and ensure they exist
+RUN mkdir -p /models /cache
 VOLUME /models
 VOLUME /cache
 
@@ -89,33 +88,38 @@ echo "  LOG_LEVEL=$LOG_LEVEL"\n\
 \n\
 # Start the server\n\
 echo "Starting server..."\n\
-if [ "$ENABLE_GPU" = "true" ]; then\n\
-    python -m llama_cpp_runner.main --models-dir "$MODELS_DIR" --cache-dir "$CACHE_DIR" \\\n\
-        --port "$PORT" --host "$HOST" --timeout "$TIMEOUT_MINUTES" \\\n\
-        --log-level "$LOG_LEVEL" --verbose --gpu --gpu-layers "$GPU_LAYERS"\n\
-else\n\
-    python -m llama_cpp_runner.main --models-dir "$MODELS_DIR" --cache-dir "$CACHE_DIR" \\\n\
-        --port "$PORT" --host "$HOST" --timeout "$TIMEOUT_MINUTES" \\\n\
-        --log-level "$LOG_LEVEL" --verbose\n\
-fi\n' > /app/start.sh && chmod +x /app/start.sh
+python -m llama_cpp_runner.unified_server \\\n\
+    --models-dir "$MODELS_DIR" \\\n\
+    --cache-dir "$CACHE_DIR" \\\n\
+    --port "$PORT" \\\n\
+    --host "$HOST" \\\n\
+    --timeout "$TIMEOUT_MINUTES" \\\n\
+    --log-level "$LOG_LEVEL" \\\n\
+    ${VERBOSE:+--verbose} \\\n\
+    ${ENABLE_GPU:+--gpu} \\\n\
+    --gpu-layers "$GPU_LAYERS"\n' > /app/start.sh && chmod +x /app/start.sh
+
+# Create non-root user for better security
+RUN groupadd -r llamauser && useradd -r -g llamauser llamauser && \
+    chown -R llamauser:llamauser /app /models /cache
 
 # Expose the API port
 EXPOSE 10000
 
 # Set environment variables with reasonable defaults
-ENV PYTHONUNBUFFERED=1
-ENV MODELS_DIR=/models
-ENV CACHE_DIR=/cache
-ENV VERBOSE=true
-ENV TIMEOUT_MINUTES=30
-ENV ENABLE_GPU=true
-ENV GPU_LAYERS=-1
-ENV PORT=10000
-ENV HOST=0.0.0.0
-ENV LOG_LEVEL=info
-ENV CUDA_VISIBLE_DEVICES=0
+ENV PYTHONUNBUFFERED=1 \
+    MODELS_DIR=/models \
+    CACHE_DIR=/cache \
+    VERBOSE=true \
+    TIMEOUT_MINUTES=30 \
+    ENABLE_GPU=true \
+    GPU_LAYERS=-1 \
+    PORT=10000 \
+    HOST=0.0.0.0 \
+    LOG_LEVEL=info \
+    CUDA_VISIBLE_DEVICES=0
 
-# Health check
+# Health check with improved resilience
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:${PORT}/health || exit 1
 
